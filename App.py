@@ -13,11 +13,7 @@ from google.genai import types
 st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="centered")
 
 # --- COOKIE MANAGER & AUTHENTICATION ---
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+cookie_manager = stx.CookieManager(key="cookie_manager")
 
 def check_auth():
     # 1. Check if session_state is already authenticated in active runtime memory
@@ -305,3 +301,4 @@ with tab2:
                 st.write("**Legs:**")
                 for leg in ticket["legs"]:
                     st.write(f"• {leg['match']}: **{leg['selection']}** ({leg['odds']})")
+
