@@ -5,6 +5,7 @@ import requests
 import datetime
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import extra_streamlit_components as stx
 from typing import List
 from pydantic import BaseModel, Field
@@ -153,6 +154,44 @@ def generate_safe_slips(fixtures_data):
 
     return SafeBetSlipResponse.model_validate_json(response.text)
 
+def copy_to_clipboard_button(text_to_copy: str, button_id: str):
+    """Renders a custom HTML/JS button to copy text directly to clipboard."""
+    escaped_text = json.dumps(text_to_copy)
+    html_code = f"""
+    <button id="btn_{button_id}" onclick="copySlip_{button_id}()" style="
+        background-color: #0E1117;
+        color: #FAFAFA;
+        border: 1px solid #4A4A4A;
+        border-radius: 8px;
+        padding: 8px 16px;
+        font-size: 14px;
+        cursor: pointer;
+        width: 100%;
+        margin-top: 8px;
+        transition: all 0.2s ease-in-out;
+    ">📋 Copy Slip to Clipboard</button>
+
+    <script>
+    function copySlip_{button_id}() {{
+        const text = {escaped_text};
+        navigator.clipboard.writeText(text).then(function() {{
+            const btn = document.getElementById("btn_{button_id}");
+            btn.innerText = "✅ Copied!";
+            btn.style.backgroundColor = "#28a745";
+            btn.style.color = "#ffffff";
+            setTimeout(function() {{
+                btn.innerText = "📋 Copy Slip to Clipboard";
+                btn.style.backgroundColor = "#0E1117";
+                btn.style.color = "#FAFAFA";
+            }}, 2000);
+        }}).catch(function(err) {{
+            alert("Failed to copy slip");
+        }});
+    }}
+    </script>
+    """
+    components.html(html_code, height=50)
+
 # --- UI TABS ---
 tab1, tab2 = st.tabs(["🎯 Today's Slips", "📜 Performance History"])
 
@@ -187,16 +226,20 @@ with tab1:
     active_data = load_active_slips()
 
     if active_data:
-        for ticket_key in ["safe_ticket_1", "safe_ticket_2"]:
+        for idx, ticket_key in enumerate(["safe_ticket_1", "safe_ticket_2"]):
             ticket = active_data[ticket_key]
             
-            # Ticket Container Header
+            # Header
             st.subheader(f"{ticket['ticket_name']}")
             st.write(f"**Total Odds:** `{ticket['total_odds']:.2f}`")
+
+            # Formatted text string for copying
+            shareable_lines = [f"⚽ {ticket['ticket_name']} (Total Odds: {ticket['total_odds']:.2f})", ""]
 
             # Minimalist Clean Leg Cards
             for leg in ticket['legs']:
                 prob_pct = leg.get('model_probability', 0) * 100
+                shareable_lines.append(f"• {leg['match']} -> Pick: {leg['selection']} @ {leg['bookmaker_odds']:.2f} ({prob_pct:.0f}% win prob)")
                 
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([3, 1.5, 1.5])
@@ -209,6 +252,11 @@ with tab1:
                     with c3:
                         st.markdown("**Win Prob.**")
                         st.write(f"**{prob_pct:.0f}%**")
+
+            # Render Copy Button for each ticket
+            formatted_slip_text = "\n".join(shareable_lines)
+            copy_to_clipboard_button(formatted_slip_text, button_id=f"slip_{idx}")
+
             st.divider()
     else:
         st.info("No slips generated for today yet.")
