@@ -1,8 +1,10 @@
 import os
+import re
 import json
 import math
 import requests
 import datetime
+import pandas as pd
 import streamlit as st
 import extra_streamlit_components as stx
 from typing import List, Optional
@@ -11,7 +13,7 @@ from google import genai
 from google.genai import types
 
 # Page setup
-st.set_page_config(page_title="Quantitative Football EV AI", page_icon="⚽", layout="wide")
+st.set_page_config(page_title="Quantitative Poisson +EV Engine", page_icon="⚽", layout="wide")
 
 # --- COOKIE MANAGER & AUTHENTICATION ---
 cookie_manager = stx.CookieManager(key="cookie_manager")
@@ -21,6 +23,7 @@ def check_auth():
         return
 
     cookies = cookie_manager.get_all()
+
     if cookies is None:
         st.stop()
 
@@ -39,14 +42,14 @@ def check_auth():
     if st.button("Login"):
         admin_pass = st.secrets.get("ADMIN_PASSWORD", "admin123")
         user_pass = st.secrets.get("USER_PASSWORD", "user123")
-        
+
         if password == admin_pass:
             st.session_state.authenticated = True
             st.session_state.role = "admin"
             admin_expiry = datetime.datetime.now() + datetime.timedelta(days=3650)
             cookie_manager.set("auth_role", "admin", expires_at=admin_expiry, key="set_admin")
             st.rerun()
-            
+
         elif password == user_pass:
             st.session_state.authenticated = True
             st.session_state.role = "user"
@@ -55,13 +58,13 @@ def check_auth():
             st.rerun()
         else:
             st.error("Invalid passcode.")
-            
+
     st.stop()
 
 check_auth()
 
-# --- HEADER & LOGOUT ---
-st.title("⚽ Quantitative Football Value Engine (+EV)")
+# --- HEADER & ROLE BADGE ---
+st.title("⚽ Quantitative Poisson +EV Betting Engine")
 st.caption(f"Logged in as: **{st.session_state.role.upper()}**")
 
 if st.button("Logout"):
@@ -70,14 +73,16 @@ if st.button("Logout"):
     st.session_state.role = None
     st.rerun()
 
-# --- MATH STATISTICAL ENGINE (POISSON MODEL) ---
+# --- QUANTITATIVE POISSON MATH ENGINE ---
 
 def poisson_pmf(k: int, mu: float) -> float:
     """Calculates Poisson probability for k goals given expected goals mu."""
+    if mu <= 0:
+        return 1.0 if k == 0 else 0.0
     return (math.pow(mu, k) * math.exp(-mu)) / math.factorial(k)
 
 def calculate_scoreline_matrix(home_xg: float, away_xg: float, max_goals: int = 7):
-    """Generates a matrix of scoreline probabilities using Poisson distributions."""
+    """Generates a scoreline probability matrix using bivariate Poisson distributions."""
     matrix = []
     for h in range(max_goals + 1):
         row = []
@@ -89,14 +94,11 @@ def calculate_scoreline_matrix(home_xg: float, away_xg: float, max_goals: int = 
     return matrix
 
 def derive_market_probabilities(home_xg: float, away_xg: float):
-    """Derives exact market outcome probabilities from expected goal metrics."""
+    """Derives exact probability metrics across low-volatility markets."""
     matrix = calculate_scoreline_matrix(home_xg, away_xg)
     
-    p_home_win = 0.0
-    p_draw = 0.0
-    p_away_win = 0.0
-    p_over_1_5 = 0.0
-    p_under_3_5 = 0.0
+    p_home_win, p_draw, p_away_win = 0.0, 0.0, 0.0
+    p_over_1_5, p_under_3_5 = 0.0, 0.0
     
     for h in range(len(matrix)):
         for a in range(len(matrix[0])):
@@ -129,16 +131,17 @@ def calculate_ev(model_prob: float, bookmaker_odds: float) -> float:
 # --- PYDANTIC SCHEMAS ---
 class BetLeg(BaseModel):
     match: str = Field(description="Home Team vs Away Team")
-    market: str = Field(description="e.g., Double Chance, Over 1.5 Goals")
-    selection: str = Field(description="Specific outcome e.g. 1X, X2, Over 1.5")
-    bookmaker_odds: float = Field(description="Decimal odds offered by bookmaker")
-    model_probability: float = Field(description="Mathematical probability between 0.0 and 1.0")
-    expected_value_pct: float = Field(description="Calculated EV percentage (e.g., 0.05 for +5% EV)")
-    rationale: str = Field(description="Data-backed rationale citing xG, stats, and late news")
+    market: str = Field(description="Double Chance or Total Goals")
+    selection: str = Field(description="1X, X2, Over 1.5, or Under 3.5")
+    bookmaker_odds: float = Field(description="Best live decimal odds")
+    estimated_home_xg: float = Field(description="Model projected Home Expected Goals")
+    estimated_away_xg: float = Field(description="Model projected Away Expected Goals")
+    model_probability: float = Field(description="Calculated Poisson probability between 0.0 and 1.0")
+    expected_value_pct: float = Field(description="Calculated Expected Value percentage (e.g. 0.045 for +4.5% EV)")
+    rationale: str = Field(description="Mathematical justification with team xG metrics, injuries, and form")
 
 class BetTicket(BaseModel):
-    ticket_name: str = Field(description="Ticket Title e.g., High-EV Floor Ticket")
-    total_odds: float = Field(description="Combined ticket odds")
+    ticket_name: str = Field(description="Ticket Title e.g., Quantitative Floor Ticket")
     legs: List[BetLeg]
 
 class SafeBetSlipResponse(BaseModel):
@@ -151,6 +154,12 @@ client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
 SLIPS_FILE = "active_slips.json"
 HISTORY_FILE = "history.json"
 
+def _atomic_write(path, data):
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f, indent=4)
+    os.replace(tmp, path)
+
 def load_active_slips():
     if os.path.exists(SLIPS_FILE):
         with open(SLIPS_FILE, "r") as f:
@@ -158,14 +167,21 @@ def load_active_slips():
     return None
 
 def save_active_slips(data):
-    with open(SLIPS_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    _atomic_write(SLIPS_FILE, data)
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
         with open(HISTORY_FILE, "r") as f:
             return json.load(f)
     return []
+
+def recompute_ticket_status(legs):
+    results = [l.get("result", "PENDING") for l in legs]
+    if any(r == "LOST" for r in results):
+        return "LOST"
+    if results and all(r == "WON" for r in results):
+        return "WON"
+    return "PENDING"
 
 def save_history(new_slips):
     history = load_history()
@@ -175,13 +191,12 @@ def save_history(new_slips):
             "total_odds": slip["total_odds"],
             "legs": slip["legs"],
             "date": datetime.date.today().strftime("%Y-%m-%d"),
-            "status": "PENDING"
+            "status": recompute_ticket_status(slip["legs"]),
         })
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=4)
+    _atomic_write(HISTORY_FILE, history)
 
 def fetch_fixtures():
-    """Fetches upcoming global football matches and odds from The Odds API."""
+    """Fetches upcoming football matches and live odds from The Odds API."""
     api_key = st.secrets.get("ODDS_API_KEY")
     url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={api_key}&regions=eu&markets=h2h,totals&oddsFormat=decimal"
     try:
@@ -196,23 +211,24 @@ def fetch_fixtures():
         return []
 
 def generate_safe_slips(fixtures_data):
-    """Hybrid Engine: Combines Poisson Statistical Engine + Gemini Live News Grounding."""
+    """Uses Gemini as a stats researcher to build input parameters for Poisson +EV modeling."""
     prompt = f"""
-    You are an elite quantitative sports betting analyst combining statistical modeling with real-time news verification.
-    
-    Live global football fixtures & odds data:
+    You are an elite quantitative football analyst specializing in Poisson goal distribution models and +EV detection.
+
+    Live global football fixtures & market data:
     {json.dumps(fixtures_data)}
 
-    --- OPERATIONAL INSTRUCTIONS ---
-    1. Search for live team news, recent home/away Expected Goals (xG), injuries, key player suspensions, and club form for today's matches.
-    2. Estimate Home xG and Away xG for top prospective matches based on stats and team availability.
-    3. Evaluate candidates mathematically: derive Double Chance (1X/X2) and Goal Totals (Over 1.5/Under 3.5) probabilities.
-    4. Calculate Expected Value (EV) for each selection: EV = (Model Probability * Bookmaker Odds) - 1.
-    5. ONLY select bets that feature POSITIVE EXPECTED VALUE (EV > +2%) and fall within floor odds between 1.15 and 1.45.
-    6. Construct 2 Tickets:
-       - Safe Ticket 1 ("Quantitative EV Floor"): 2-3 legs, combined odds ~1.60 – 2.20.
-       - Safe Ticket 2 ("Balanced Value EV"): 3-4 legs, combined odds ~2.20 – 3.20.
-    7. Provide exact stats, calculated model probabilities, and verified team news in the rationale.
+    --- QUANTITATIVE TASK INSTRUCTIONS ---
+    1. Perform live Google searches for candidates to gather home/away Expected Goals (xG), goal trends, clean sheet percentages, and squad injury news.
+    2. Estimate the baseline Home xG and Away xG for each candidate match based on recent statistics and lineup availability.
+    3. Run Poisson distribution equations on your calculated xG parameters to get exact outcome probabilities for:
+       - Double Chance (1X, X2)
+       - Total Goals (Over 1.5, Under 3.5)
+    4. Calculate Expected Value: EV = (Poisson Probability * Bookmaker Decimal Odds) - 1.0
+    5. STRICT REQUIREMENT: Only select legs that demonstrate positive Expected Value (EV > +2.0%) and carry bookmaker floor odds between 1.15 and 1.45.
+    6. Formulate 2 Tickets:
+       - Safe Ticket 1 ("Quantitative EV Floor"): 2-3 legs, targeting target odds around 1.60 – 2.20.
+       - Safe Ticket 2 ("Balanced Quantitative Value"): 3-4 legs, targeting target odds around 2.20 – 3.20.
     """
 
     response = client.models.generate_content(
@@ -229,19 +245,19 @@ def generate_safe_slips(fixtures_data):
     return SafeBetSlipResponse.model_validate_json(response.text)
 
 # --- TAB INTERFACE ---
-tab1, tab2, tab3 = st.tabs(["🎯 Active Slips Generator", "📜 Bet History & Settlement", "📊 Model Calibration & EV Tracker"])
+tab1, tab2, tab3 = st.tabs(["🎯 Active Slips Generator", "📜 Bet History & Settlement", "📊 Poisson Calibration Audit"])
 
 with tab1:
     if st.session_state.role == "admin":
         st.subheader("⚙️ Admin Controls")
-        confirm_generate = st.checkbox("Confirm: Fetch live odds & run Quantitative EV Generation")
-        
-        if st.button("🔄 Generate Today's Value Slips", type="primary", disabled=not confirm_generate):
-            with st.spinner("Running Poisson Goal Distributions & Gemini Grounding Engine..."):
+        confirm_generate = st.checkbox("Confirm: Fetch live odds & run Quantitative Poisson Pipeline")
+
+        if st.button("🔄 Generate Today's Poisson +EV Slips", type="primary", disabled=not confirm_generate):
+            with st.spinner("Processing Poisson Goal Distributions & Grounded xG Data..."):
                 fixtures = fetch_fixtures()
                 slips = generate_safe_slips(fixtures)
-                
-                # Automatically calculate accurate mathematical combined odds
+
+                # Python explicitly calculates mathematically accurate combined odds
                 odds1 = math.prod([leg.bookmaker_odds for leg in slips.safe_ticket_1.legs])
                 odds2 = math.prod([leg.bookmaker_odds for leg in slips.safe_ticket_2.legs])
 
@@ -249,43 +265,45 @@ with tab1:
                     "safe_ticket_1": {
                         "ticket_name": slips.safe_ticket_1.ticket_name,
                         "total_odds": round(odds1, 2),
-                        "legs": [leg.dict() for leg in slips.safe_ticket_1.legs]
+                        "legs": [leg.dict() for leg in slips.safe_ticket_1.legs],
                     },
                     "safe_ticket_2": {
                         "ticket_name": slips.safe_ticket_2.ticket_name,
                         "total_odds": round(odds2, 2),
-                        "legs": [leg.dict() for leg in slips.safe_ticket_2.legs]
-                    }
+                        "legs": [leg.dict() for leg in slips.safe_ticket_2.legs],
+                    },
                 }
-                
+
                 save_active_slips(slips_data)
                 save_history([slips_data["safe_ticket_1"], slips_data["safe_ticket_2"]])
-                st.success("Value slips generated and logged successfully!")
+                st.success("Poisson +EV slips generated and logged successfully!")
                 st.rerun()
 
     active_data = load_active_slips()
-    
+
     if active_data:
         st.subheader("🎯 Today's Active Value Slips (+EV)")
-        
+
         for ticket_key in ["safe_ticket_1", "safe_ticket_2"]:
             ticket = active_data[ticket_key]
             color_badge = "🟢" if ticket_key == "safe_ticket_1" else "🔵"
-            
+
             st.markdown(f"### {color_badge} {ticket['ticket_name']}")
-            st.metric("Combined Calculated Odds", f"{ticket['total_odds']:.2f}")
-            
-            for leg in ticket['legs']:
-                ev_pct = leg.get('expected_value_pct', 0) * 100
-                prob_pct = leg.get('model_probability', 0) * 100
-                
-                col1, col2 = st.columns([3, 1])
+            st.metric("Combined Ticket Odds", f"{ticket['total_odds']:.2f}")
+
+            for leg in ticket["legs"]:
+                ev_pct = leg.get("expected_value_pct", 0) * 100
+                prob_pct = leg.get("model_probability", 0) * 100
+
+                col1, col2, col3 = st.columns([3, 1, 1])
                 with col1:
-                    st.write(f"• **{leg['match']}** ({leg['market']}): **{leg['selection']}** @ **{leg['bookmaker_odds']}**")
+                    st.write(f"• **{leg['match']}** ({leg['market']}): **{leg['selection']}** @ **{leg['bookmaker_odds']:.2f}**")
                     st.caption(f"_{leg['rationale']}_")
                 with col2:
-                    st.metric("Model Prob", f"{prob_pct:.1f}%")
-                    st.caption(f"+EV: **+{ev_pct:.1f}%**")
+                    st.metric("Projected xG", f"{leg['estimated_home_xg']:.2f} - {leg['estimated_away_xg']:.2f}")
+                with col3:
+                    st.metric("Poisson Prob", f"{prob_pct:.1f}%")
+                    st.caption(f"Calculated Edge: **+{ev_pct:.1f}% EV**")
             st.write("---")
     else:
         st.warning("⚠️ No slips generated for today yet.")
@@ -293,7 +311,7 @@ with tab1:
 with tab2:
     st.subheader("📜 Historical Performance Tracker")
     history_data = load_history()
-    
+
     if not history_data:
         st.info("No historical slips recorded yet.")
     else:
@@ -301,7 +319,7 @@ with tab2:
         won_slips = sum(1 for t in history_data if t.get("status") == "WON")
         lost_slips = sum(1 for t in history_data if t.get("status") == "LOST")
         pending_slips = sum(1 for t in history_data if t.get("status") == "PENDING")
-        
+
         settled_slips = won_slips + lost_slips
         win_rate = (won_slips / settled_slips * 100) if settled_slips > 0 else 0.0
 
@@ -317,61 +335,67 @@ with tab2:
             real_index = len(history_data) - 1 - idx
             status = ticket.get("status", "PENDING")
             status_icon = "🟢" if status == "WON" else ("🔴" if status == "LOST" else "🟡")
-            
-            with st.expander(f"{status_icon} {ticket['name']} — Target Odds: {ticket['total_odds']:.2f} [{status}]"):
-                if st.session_state.role == "admin":
-                    c1, c2, c3 = st.columns(3)
-                    if c1.button("Mark Won 🟢", key=f"won_{real_index}"):
-                        history_data[real_index]["status"] = "WON"
-                        with open(HISTORY_FILE, "w") as f:
-                            json.dump(history_data, f, indent=4)
-                        st.rerun()
-                    if c2.button("Mark Lost 🔴", key=f"lost_{real_index}"):
-                        history_data[real_index]["status"] = "LOST"
-                        with open(HISTORY_FILE, "w") as f:
-                            json.dump(history_data, f, indent=4)
-                        st.rerun()
-                    if c3.button("Reset Pending 🟡", key=f"pend_{real_index}"):
-                        history_data[real_index]["status"] = "PENDING"
-                        with open(HISTORY_FILE, "w") as f:
-                            json.dump(history_data, f, indent=4)
-                        st.rerun()
 
+            with st.expander(f"{status_icon} {ticket['name']} — Target Odds: {ticket['total_odds']:.2f} [{status}]"):
                 st.write("**Legs:**")
                 for leg in ticket["legs"]:
-                    st.write(f"• {leg['match']}: **{leg['selection']}** ({leg['bookmaker_odds']})")
+                    result_icon = {"WON": "🟢", "LOST": "🔴"}.get(leg.get("result", "PENDING"), "🟡")
+                    st.write(f"• {result_icon} {leg['match']}: **{leg['selection']}** ({leg.get('bookmaker_odds', 1.0):.2f})")
+
+                if st.session_state.role == "admin":
+                    st.write("---")
+                    with st.form(key=f"settle_form_{real_index}"):
+                        leg_inputs = []
+                        for li, leg in enumerate(ticket["legs"]):
+                            result_choice = st.selectbox(
+                                f"Outcome for {leg['match']} — {leg['selection']}",
+                                ["PENDING", "WON", "LOST"],
+                                index=["PENDING", "WON", "LOST"].index(leg.get("result", "PENDING")),
+                                key=f"res_{real_index}_{li}"
+                            )
+                            leg_inputs.append(result_choice)
+                        if st.form_submit_button("💾 Save Leg Outcomes"):
+                            for li, res in enumerate(leg_inputs):
+                                history_data[real_index]["legs"][li]["result"] = res
+                            history_data[real_index]["status"] = recompute_ticket_status(history_data[real_index]["legs"])
+                            _atomic_write(HISTORY_FILE, history_data)
+                            st.rerun()
 
 with tab3:
-    st.subheader("📊 Quantitative Calibration & EV Audit")
+    st.subheader("📊 Poisson Model Calibration & Edge Audit")
     history_data = load_history()
-    
+
     all_legs = []
     for ticket in history_data:
-        status = ticket.get("status")
-        for leg in ticket["legs"]:
-            if status in ["WON", "LOST"]:
+        for leg in ticket.get("legs", []):
+            res = leg.get("result")
+            if res in ["WON", "LOST"]:
                 all_legs.append({
                     "odds": leg.get("bookmaker_odds", 1.20),
                     "prob": leg.get("model_probability", 0.80),
                     "ev": leg.get("expected_value_pct", 0.05),
-                    "won": 1 if status == "WON" else 0
+                    "won": 1 if res == "WON" else 0
                 })
-                
+
     if not all_legs:
-        st.info("Settle at least 5-10 historical tickets to view model calibration statistics.")
+        st.info("Settle individual legs in the History tab to review Poisson model calibration statistics.")
     else:
-        total_settled_legs = len(all_legs)
-        actual_win_rate = (sum(l["won"] for l in all_legs) / total_settled_legs) * 100
-        avg_expected_win_rate = (sum(l["prob"] for l in all_legs) / total_settled_legs) * 100
-        
-        m1, m2, m3 = st.columns(3)
-        m1.metric("Settled Sample Legs", total_settled_legs)
+        df = pd.DataFrame(all_legs)
+        total_legs = len(df)
+        actual_win_rate = df["won"].mean() * 100
+        projected_win_rate = df["prob"].mean() * 100
+        avg_ev = df["ev"].mean() * 100
+
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Settled Legs Sample", total_legs)
         m2.metric("Actual Win Rate", f"{actual_win_rate:.1f}%")
-        m3.metric("Model Projected Win Rate", f"{avg_expected_win_rate:.1f}%")
-        
-        diff = actual_win_rate - avg_expected_win_rate
+        m3.metric("Poisson Expected Win Rate", f"{projected_win_rate:.1f}%")
+        m4.metric("Average Model Edge", f"+{avg_ev:.1f}% EV")
+
+        st.write("---")
+        diff = actual_win_rate - projected_win_rate
         if diff >= 0:
-            st.success(f"🎯 **Model Calibration Positive:** Actual win rate is beating mathematical expectation by +{diff:.1f}%!")
+            st.success(f"🎯 **Model Calibration Positive:** Realized win rate exceeds mathematical expectations by **+{diff:.1f}%**!")
         else:
-            st.warning(f"⚠️ **Model Calibration Negative:** Actual win rate is trailing mathematical expectation by {diff:.1f}%.")
+            st.warning(f"⚠️ **Model Calibration Negative:** Realized win rate trails mathematical expectations by **{diff:.1f}%**.")
 
