@@ -12,47 +12,59 @@ from google.genai import types
 # Page setup
 st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="centered")
 
-# --- COOKIE MANAGER ---
+# --- COOKIE MANAGER & AUTHENTICATION ---
+@st.cache_resource
 def get_cookie_manager():
-    return stx.CookieManager(key="cookie_manager")
+    return stx.CookieManager()
 
 cookie_manager = get_cookie_manager()
 
-# --- AUTHENTICATION MODULE ---
 def check_auth():
-    saved_role = cookie_manager.get(cookie="auth_role")
-    
-    if "authenticated" not in st.session_state:
-        if saved_role in ["admin", "user"]:
-            st.session_state.authenticated = True
-            st.session_state.role = saved_role
-        else:
-            st.session_state.authenticated = False
-            st.session_state.role = None
+    # 1. Check if session_state is already authenticated in active runtime memory
+    if st.session_state.get("authenticated", False):
+        return
 
-    if not st.session_state.authenticated:
-        st.title("🔒 Restricted Access")
-        password = st.text_input("Enter Passcode:", type="password")
-        if st.button("Login"):
-            admin_pass = st.secrets.get("ADMIN_PASSWORD", "admin123")
-            user_pass = st.secrets.get("USER_PASSWORD", "user123")
-            
-            if password == admin_pass:
-                st.session_state.authenticated = True
-                st.session_state.role = "admin"
-                admin_expiry = datetime.datetime.now() + datetime.timedelta(days=3650)
-                cookie_manager.set("auth_role", "admin", expires_at=admin_expiry, key="set_admin")
-                st.rerun()
-                
-            elif password == user_pass:
-                st.session_state.authenticated = True
-                st.session_state.role = "user"
-                user_expiry = datetime.datetime.now() + datetime.timedelta(minutes=10)
-                cookie_manager.set("auth_role", "user", expires_at=user_expiry, key="set_user")
-                st.rerun()
-            else:
-                st.error("Invalid passcode.")
+    # 2. Fetch browser cookies
+    cookies = cookie_manager.get_all()
+    
+    # 3. Hydration Guard: Wait for frontend cookie component to load on page refresh
+    if cookies is None or not isinstance(cookies, dict):
         st.stop()
+
+    saved_role = cookies.get("auth_role")
+
+    # 4. Auto-login if a valid persistent cookie exists
+    if saved_role in ["admin", "user"]:
+        st.session_state.authenticated = True
+        st.session_state.role = saved_role
+        st.rerun()
+
+    # 5. Fallback to Login UI if no cookie is present
+    st.session_state.authenticated = False
+    st.session_state.role = None
+
+    st.title("🔒 Restricted Access")
+    password = st.text_input("Enter Passcode:", type="password")
+    if st.button("Login"):
+        admin_pass = st.secrets.get("ADMIN_PASSWORD", "admin123")
+        user_pass = st.secrets.get("USER_PASSWORD", "user123")
+        
+        if password == admin_pass:
+            st.session_state.authenticated = True
+            st.session_state.role = "admin"
+            admin_expiry = datetime.datetime.now() + datetime.timedelta(days=3650)
+            cookie_manager.set("auth_role", "admin", expires_at=admin_expiry, key="set_admin")
+            st.rerun()
+            
+        elif password == user_pass:
+            st.session_state.authenticated = True
+            st.session_state.role = "user"
+            user_expiry = datetime.datetime.now() + datetime.timedelta(minutes=10)
+            cookie_manager.set("auth_role", "user", expires_at=user_expiry, key="set_user")
+            st.rerun()
+        else:
+            st.error("Invalid passcode.")
+    st.stop()
 
 check_auth()
 
