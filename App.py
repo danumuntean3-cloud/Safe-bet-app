@@ -1,7 +1,9 @@
 import os
 import json
 import requests
+import datetime
 import streamlit as st
+import extra_streamlit_components as stx
 from typing import List
 from pydantic import BaseModel, Field
 from google import genai
@@ -9,11 +11,24 @@ from google.genai import types
 
 st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="centered")
 
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager(key="cookie_manager")
+
+cookie_manager = get_cookie_manager()
+
 # --- AUTHENTICATION MODULE ---
 def check_auth():
+    # Read saved session cookie
+    saved_role = cookie_manager.get(cookie="auth_role")
+    
     if "authenticated" not in st.session_state:
-        st.session_state.authenticated = False
-        st.session_state.role = None
+        if saved_role in ["admin", "user"]:
+            st.session_state.authenticated = True
+            st.session_state.role = saved_role
+        else:
+            st.session_state.authenticated = False
+            st.session_state.role = None
 
     if not st.session_state.authenticated:
         st.title("🔒 Restricted Access")
@@ -25,10 +40,17 @@ def check_auth():
             if password == admin_pass:
                 st.session_state.authenticated = True
                 st.session_state.role = "admin"
+                # Admin session (10 years)
+                admin_expiry = datetime.datetime.now() + datetime.timedelta(days=3650)
+                cookie_manager.set("auth_role", "admin", expires_at=admin_expiry, key="set_admin")
                 st.rerun()
+                
             elif password == user_pass:
                 st.session_state.authenticated = True
                 st.session_state.role = "user"
+                # Guest session (Expires strictly after 10 minutes)
+                user_expiry = datetime.datetime.now() + datetime.timedelta(minutes=10)
+                cookie_manager.set("auth_role", "user", expires_at=user_expiry, key="set_user")
                 st.rerun()
             else:
                 st.error("Invalid passcode.")
@@ -41,11 +63,13 @@ st.title("⚽ Daily Safe Bet Slips")
 st.caption(f"Logged in as: **{st.session_state.role.upper()}**")
 
 if st.button("Logout"):
+    cookie_manager.delete("auth_role", key="delete_cookie")
     st.session_state.authenticated = False
     st.session_state.role = None
     st.rerun()
 
 # --- PYDANTIC SCHEMAS ---
+
 class BetLeg(BaseModel):
     match: str = Field(description="Match title, e.g., 'Brentford vs Chelsea'")
     league: str = Field(description="League name")
