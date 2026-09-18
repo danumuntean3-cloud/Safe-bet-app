@@ -9,17 +9,17 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
+# Page setup
 st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="centered")
 
+# --- COOKIE MANAGER ---
 def get_cookie_manager():
     return stx.CookieManager(key="cookie_manager")
 
 cookie_manager = get_cookie_manager()
 
-
 # --- AUTHENTICATION MODULE ---
 def check_auth():
-    # Read saved session cookie
     saved_role = cookie_manager.get(cookie="auth_role")
     
     if "authenticated" not in st.session_state:
@@ -40,7 +40,6 @@ def check_auth():
             if password == admin_pass:
                 st.session_state.authenticated = True
                 st.session_state.role = "admin"
-                # Admin session (10 years)
                 admin_expiry = datetime.datetime.now() + datetime.timedelta(days=3650)
                 cookie_manager.set("auth_role", "admin", expires_at=admin_expiry, key="set_admin")
                 st.rerun()
@@ -48,7 +47,6 @@ def check_auth():
             elif password == user_pass:
                 st.session_state.authenticated = True
                 st.session_state.role = "user"
-                # Guest session (Expires strictly after 10 minutes)
                 user_expiry = datetime.datetime.now() + datetime.timedelta(minutes=10)
                 cookie_manager.set("auth_role", "user", expires_at=user_expiry, key="set_user")
                 st.rerun()
@@ -69,118 +67,135 @@ if st.button("Logout"):
     st.rerun()
 
 # --- PYDANTIC SCHEMAS ---
-
 class BetLeg(BaseModel):
-    match: str = Field(description="Match title, e.g., 'Brentford vs Chelsea'")
-    league: str = Field(description="League name")
-    selection: str = Field(description="Specific outcome, e.g., 'Double Chance 1X'")
-    market: str = Field(description="Market type")
-    odds: float = Field(description="Decimal odds (1.15 to 1.50)")
-    rationale: str = Field(description="Floor rationale under 15 words")
+    match: str = Field(description="Home Team vs Away Team")
+    market: str = Field(description="e.g., Double Chance, Over 1.5 Goals")
+    selection: str = Field(description="Specific outcome, e.g., 1X or Over 1.5")
+    odds: float = Field(description="Decimal odds, e.g., 1.25")
+    rationale: str = Field(description="Data-backed rationale citing stats, injuries, form, or xG")
 
-class Ticket(BaseModel):
-    ticket_name: str = Field(description="Safe Floor Slip or Double-Chance Buffer")
-    total_odds: float = Field(description="Target combined odds 2.00 - 3.00")
-    projected_return_10_stake: float = Field(description="Return on $10 stake")
+class BetTicket(BaseModel):
+    ticket_name: str = Field(description="Ticket title e.g. Conservative Floor")
+    total_odds: float = Field(description="Combined ticket odds")
     legs: List[BetLeg]
 
 class SafeBetSlipResponse(BaseModel):
-    safe_ticket_1: Ticket
-    safe_ticket_2: Ticket
+    safe_ticket_1: BetTicket
+    safe_ticket_2: BetTicket
 
-# --- HISTORY & ACTIVE FILE MANAGEMENT ---
+# --- GEMINI & STORAGE HELPERS ---
+client = genai.Client(api_key=st.secrets["GEMINI_API_KEY"])
+
+SLIPS_FILE = "active_slips.json"
 HISTORY_FILE = "history.json"
-ACTIVE_FILE = "active_slips.json"
+
+def load_active_slips():
+    if os.path.exists(SLIPS_FILE):
+        with open(SLIPS_FILE, "r") as f:
+            return json.load(f)
+    return None
+
+def save_active_slips(data):
+    with open(SLIPS_FILE, "w") as f:
+        json.dump(data, f, indent=4)
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        try:
-            with open(HISTORY_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
     return []
 
-def save_history(tickets):
+def save_history(new_slips):
     history = load_history()
-    for t in tickets:
+    for slip in new_slips:
         history.append({
-            "name": t["ticket_name"],
-            "total_odds": t["total_odds"],
-            "status": "PENDING",
-            "legs": t["legs"]
+            "name": slip["ticket_name"],
+            "total_odds": slip["total_odds"],
+            "legs": slip["legs"],
+            "date": datetime.date.today().strftime("%Y-%m-%d"),
+            "status": "PENDING"
         })
-    try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(history, f, indent=2)
-    except Exception:
-        pass
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=4)
 
-def load_active_slips():
-    if os.path.exists(ACTIVE_FILE):
-        try:
-            with open(ACTIVE_FILE, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return None
-
-def save_active_slips(slips_data: dict):
+def fetch_fixtures():
+    """Fetches all upcoming global football matches from The Odds API."""
+    api_key = st.secrets.get("ODDS_API_KEY")
+    url = f"https://api.the-odds-api.com/v4/sports/soccer/odds/?apiKey={api_key}&regions=eu&markets=h2h,totals&oddsFormat=decimal"
     try:
-        with open(ACTIVE_FILE, "w") as f:
-            json.dump(slips_data, f, indent=2)
-    except Exception:
-        pass
-
-# --- FETCH ODDS & GENERATE SLIPS ---
-def fetch_fixtures() -> List[dict]:
-    odds_api_key = os.getenv("ODDS_API_KEY", "")
-    if not odds_api_key:
-        return [
-            {"match": "Bayern Munich vs Union Berlin", "league": "Bundesliga", "h2h": [1.25, 6.0, 10.0]},
-            {"match": "Brentford vs Chelsea", "league": "Premier League", "h2h": [3.4, 3.5, 2.1]}
-        ]
-    url = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
-    params = {"apiKey": odds_api_key, "regions": "eu,uk", "markets": "h2h,totals", "oddsFormat": "decimal"}
-    try:
-        res = requests.get(url, params=params, timeout=8)
-        return res.json()[:6]
-    except Exception:
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Odds API Error: {response.status_code}")
+            return []
+    except Exception as e:
+        st.error(f"Failed to fetch fixtures: {e}")
         return []
 
-def generate_safe_slips(fixtures_data) -> SafeBetSlipResponse:
-    gemini_key = os.getenv("GEMINI_API_KEY")
-    if not gemini_key:
-        st.error("Missing GEMINI_API_KEY in Secrets!")
-        st.stop()
+def generate_safe_slips(fixtures_data):
+    """Deep AI engine executing an Institutional 16-Point Checklist with Google Search Grounding."""
+    prompt = f"""
+    You are an elite quantitative sports betting syndicate analyst.
+    
+    Live global football fixtures data:
+    {json.dumps(fixtures_data)}
 
-    client = genai.Client(api_key=gemini_key)
-    prompt = f"Analyze these fixtures: {json.dumps(fixtures_data)}. Generate EXACTLY TWO SAFE slips (Target total odds strictly between 2.00 and 3.00)."
+    --- INSTITUTIONAL 16-POINT MATCH EVALUATION ---
+    Use Google Search Grounding to perform live web searches and evaluate candidate matches across all 16 variables:
+    1. SQUAD AVAILABILITY: Key missing starters (injuries, suspensions, international duty).
+    2. RECENT FORM: Last 5 matches, win/loss trends, clean sheet frequency.
+    3. xG METRICS: Over/underperformance against Expected Goals (xG vs actual goals).
+    4. VENUE & TURF: Home vs Away splits and artificial pitch surfaces.
+    5. HEAD-TO-HEAD (H2H): Historical matchup trends over the last 3 seasons.
+    6. REST DELTA: Days of rest since the last match for both teams.
+    7. MOTIVATION: Title race, relegation battle, or dead-rubber game context.
+    8. TACTICAL FIT: High-press vs low-block styles and defensive line depth.
+    9. GOALKEEPER METRICS: Starting keeper form and PSxG efficiency.
+    10. SET-PIECE MATCHUPS: Corner/free-kick threat vs opponent aerial defending.
+    11. BENCH DEPTH: Squad quality for late-game 5-sub tactical adjustments.
+    12. ENVIRONMENT: Severe weather (heavy rain, high winds, extreme cold/heat).
+    13. TRAVEL & JETLAG: Long travel distances or international duty fatigue.
+    14. REFEREE STRICTNESS: High yellow/red card or penalty trends.
+    15. CLUB MORALE: New manager bounce, contract disputes, or financial turmoil.
+    16. LINE MOVEMENTS: Sharp odds movements and market adjustments.
+
+    --- MARKET RULES & CONSTRAINTS ---
+    - Select strictly low-volatility, high-probability floor markets:
+      • Double Chance (1X or X2)
+      • Over 1.5 Total Goals
+      • Under 3.5 / Under 4.5 Goals
+      • Asian Handicap (+1.5 or +2.0)
+      • Team Total Goals (Over 0.5)
+    - Individual Leg Odds: Target strict floor odds between 1.15 and 1.45.
+    - Safe Ticket 1 ("Conservative Floor"): Combined odds 1.60 – 2.20 (2-3 legs max).
+    - Safe Ticket 2 ("Balanced Value"): Combined odds 2.20 – 3.50 (3-4 legs max).
+    - Rationales: Explicitly state at least 2 verified statistical metrics or squad facts per selection.
+    """
 
     response = client.models.generate_content(
         model="gemini-3.6-flash",
         contents=prompt,
         config=types.GenerateContentConfig(
+            tools=[{"google_search": {}}],
             response_mime_type="application/json",
             response_schema=SafeBetSlipResponse,
             temperature=0.1,
         ),
     )
+
     return SafeBetSlipResponse.model_validate_json(response.text)
 
 # --- TAB INTERFACE ---
 tab1, tab2 = st.tabs(["🎯 Active Slips Generator", "📜 Bet History & Tracker"])
 
 with tab1:
-    # 1. Admin controls with safety checkbox safeguard
     if st.session_state.role == "admin":
         st.subheader("⚙️ Admin Controls")
-        
-        # Checkbox safeguard to prevent accidental paid API triggers
         confirm_generate = st.checkbox("Confirm: Fetch live odds & run paid Gemini AI generation")
         
         if st.button("🔄 Generate Today's Safe Slips", type="primary", disabled=not confirm_generate):
-            with st.spinner("Analyzing match metrics & floor consistency..."):
+            with st.spinner("Executing 16-Point Institutional Analysis & Google Grounding..."):
                 fixtures = fetch_fixtures()
                 slips = generate_safe_slips(fixtures)
                 
@@ -199,10 +214,9 @@ with tab1:
                 
                 save_active_slips(slips_data)
                 save_history([slips_data["safe_ticket_1"], slips_data["safe_ticket_2"]])
-                st.success("Slips updated successfully!")
+                st.success("Slips generated and logged successfully!")
                 st.rerun()
 
-    # 2. Display active slips from saved JSON file for both Admin and Guests
     active_data = load_active_slips()
     
     if active_data:
@@ -226,7 +240,6 @@ with tab1:
         if st.session_state.role != "admin":
             st.info("Please wait for the Admin to generate today's safe slips.")
 
-
 with tab2:
     st.subheader("📜 Historical Performance Tracker")
     history_data = load_history()
@@ -234,17 +247,14 @@ with tab2:
     if not history_data:
         st.info("No historical slips recorded yet.")
     else:
-        # --- PERFORMANCE STATISTICS COUNTER ---
         total_slips = len(history_data)
         won_slips = sum(1 for t in history_data if t.get("status") == "WON")
         lost_slips = sum(1 for t in history_data if t.get("status") == "LOST")
         pending_slips = sum(1 for t in history_data if t.get("status") == "PENDING")
         
-        # Win Rate calculation (excluding pending)
         settled_slips = won_slips + lost_slips
         win_rate = (won_slips / settled_slips * 100) if settled_slips > 0 else 0.0
 
-        # Display Summary Dashboard Metrics in columns
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Total Slips", total_slips)
         col2.metric("Won 🟢", won_slips)
@@ -256,30 +266,30 @@ with tab2:
 
         st.write("---")
 
-        # --- SLIP LIST DISPLAY ---
         for idx, ticket in enumerate(reversed(history_data)):
+            real_index = len(history_data) - 1 - idx
             status = ticket.get("status", "PENDING")
             status_icon = "🟢" if status == "WON" else ("🔴" if status == "LOST" else "🟡")
             
             with st.expander(f"{status_icon} {ticket['name']} — Target Odds: {ticket['total_odds']:.2f} [{status}]"):
-                # Admin controls to mark status directly in history
                 if st.session_state.role == "admin":
                     c1, c2, c3 = st.columns(3)
-                    if c1.button("Mark Won 🟢", key=f"won_{idx}"):
-                        history_data[len(history_data) - 1 - idx]["status"] = "WON"
-                        save_history(history_data) # persists update
+                    if c1.button("Mark Won 🟢", key=f"won_{real_index}"):
+                        history_data[real_index]["status"] = "WON"
+                        with open(HISTORY_FILE, "w") as f:
+                            json.dump(history_data, f, indent=4)
                         st.rerun()
-                    if c2.button("Mark Lost 🔴", key=f"lost_{idx}"):
-                        history_data[len(history_data) - 1 - idx]["status"] = "LOST"
-                        save_history(history_data)
+                    if c2.button("Mark Lost 🔴", key=f"lost_{real_index}"):
+                        history_data[real_index]["status"] = "LOST"
+                        with open(HISTORY_FILE, "w") as f:
+                            json.dump(history_data, f, indent=4)
                         st.rerun()
-                    if c3.button("Reset Pending 🟡", key=f"pend_{idx}"):
-                        history_data[len(history_data) - 1 - idx]["status"] = "PENDING"
-                        save_history(history_data)
+                    if c3.button("Reset Pending 🟡", key=f"pend_{real_index}"):
+                        history_data[real_index]["status"] = "PENDING"
+                        with open(HISTORY_FILE, "w") as f:
+                            json.dump(history_data, f, indent=4)
                         st.rerun()
 
                 st.write("**Legs:**")
                 for leg in ticket["legs"]:
                     st.write(f"• {leg['match']}: **{leg['selection']}** ({leg['odds']})")
-
-
