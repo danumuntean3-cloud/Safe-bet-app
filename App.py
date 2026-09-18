@@ -11,11 +11,11 @@ from google.genai import types
 
 st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="centered")
 
-@st.cache_resource
 def get_cookie_manager():
     return stx.CookieManager(key="cookie_manager")
 
 cookie_manager = get_cookie_manager()
+
 
 # --- AUTHENTICATION MODULE ---
 def check_auth():
