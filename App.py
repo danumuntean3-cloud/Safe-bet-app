@@ -27,9 +27,10 @@ class BetLeg(BaseModel):
 
 class Ticket(BaseModel):
     ticket_name: str = Field(description="e.g. 'Safe Floor Slip' or 'Double-Chance Buffer Slip'")
-    total_odds: float = Field(description="Product of individual leg odds (Target 2.00 - 2.80)")
+    total_odds: float = Field(description="Product of individual leg odds (Target 2.00 - 3.00)")
     projected_return_10_stake: float = Field(description="Return on a $10 / £10 stake")
     legs: List[BetLeg]
+
 
 class SafeBetSlipResponse(BaseModel):
     safe_ticket_1: Ticket  # Floor-Verified Slip (Target 2.00 - 2.40)
@@ -73,11 +74,12 @@ def generate_safe_slips(fixtures_data: List[dict]) -> SafeBetSlipResponse:
     Analyze these fixtures: {json.dumps(fixtures_data)}
 
     RULES:
-    1. Generate EXACTLY TWO SAFE tickets. NO high-odds or aggressive longshots allowed.
-    2. Ticket 1 ('safe_ticket_1'): Safe Floor Slip (Target total odds: 2.00 – 2.40). Use Over 1.5 Goals, heavy home wins, or DNB.
-    3. Ticket 2 ('safe_ticket_2'): Double-Chance Buffer Slip (Target total odds: 2.30 – 2.80). Use Double Chance (1X/X2) and Under 3.5/4.5 Goals.
+    1. Generate EXACTLY TWO SAFE tickets using the live bookie odds provided in fixtures_data.
+    2. Ticket 1 ('safe_ticket_1'): Safe Floor Slip (Target total odds: 2.00 - 2.50).
+    3. Ticket 2 ('safe_ticket_2'): Double-Chance Buffer Slip (Target total odds: 2.45 - 3.00).
     4. Capping: Maximum 2 to 3 legs per ticket.
-    5. Math Accuracy: Combined total_odds MUST equal the exact product of leg odds.
+    5. Math Accuracy: Combined total_odds MUST equal the exact mathematical product of individual leg odds.
+
     """
 
     response = client.models.generate_content(
