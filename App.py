@@ -7,49 +7,92 @@ from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 
-# ---------------------------------------------------------------------------
-# STREAMLIT UI CONFIGURATION (OPTIMIZED FOR ANDROID PHONE SCREENS)
-# ---------------------------------------------------------------------------
 st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="centered")
-st.title("⚽ Daily Safe Bet Slips (Low Odds)")
-st.caption("AI-Powered Floor & Buffer Accumulators (Target Odds: 2.00 – 2.80)")
 
-# ---------------------------------------------------------------------------
-# PYDANTIC SCHEMAS FOR STRICT JSON OUTPUT (2 SAFE SLIPS)
-# ---------------------------------------------------------------------------
+# --- AUTHENTICATION MODULE ---
+def check_auth():
+    if "authenticated" not in st.session_state:
+        st.session_state.authenticated = False
+        st.session_state.role = None
+
+    if not st.session_state.authenticated:
+        st.title("🔒 Restricted Access")
+        password = st.text_input("Enter Passcode:", type="password")
+        if st.button("Login"):
+            admin_pass = st.secrets.get("ADMIN_PASSWORD", "admin123")
+            user_pass = st.secrets.get("USER_PASSWORD", "user123")
+            
+            if password == admin_pass:
+                st.session_state.authenticated = True
+                st.session_state.role = "admin"
+                st.rerun()
+            elif password == user_pass:
+                st.session_state.authenticated = True
+                st.session_state.role = "user"
+                st.rerun()
+            else:
+                st.error("Invalid passcode.")
+        st.stop()
+
+check_auth()
+
+# --- HEADER & ROLE BADGE ---
+st.title("⚽ Daily Safe Bet Slips")
+st.caption(f"Logged in as: **{st.session_state.role.upper()}**")
+
+if st.button("Logout"):
+    st.session_state.authenticated = False
+    st.session_state.role = None
+    st.rerun()
+
+# --- PYDANTIC SCHEMAS ---
 class BetLeg(BaseModel):
     match: str = Field(description="Match title, e.g., 'Brentford vs Chelsea'")
-    league: str = Field(description="League name, e.g., 'Premier League'")
-    selection: str = Field(description="Specific low-risk outcome picked")
-    market: str = Field(description="Market type, e.g., 'Double Chance (1X)', 'Over 1.5'")
-    odds: float = Field(description="Decimal odds for this leg (1.15 to 1.45)")
-    rationale: str = Field(description="Tactical/floor reason under 15 words")
+    league: str = Field(description="League name")
+    selection: str = Field(description="Specific outcome, e.g., 'Double Chance 1X'")
+    market: str = Field(description="Market type")
+    odds: float = Field(description="Decimal odds (1.15 to 1.50)")
+    rationale: str = Field(description="Floor rationale under 15 words")
 
 class Ticket(BaseModel):
-    ticket_name: str = Field(description="e.g. 'Safe Floor Slip' or 'Double-Chance Buffer Slip'")
-    total_odds: float = Field(description="Product of individual leg odds (Target 2.00 - 3.00)")
-    projected_return_10_stake: float = Field(description="Return on a $10 / £10 stake")
+    ticket_name: str = Field(description="Safe Floor Slip or Double-Chance Buffer")
+    total_odds: float = Field(description="Target combined odds 2.00 - 3.00")
+    projected_return_10_stake: float = Field(description="Return on $10 stake")
     legs: List[BetLeg]
 
-
 class SafeBetSlipResponse(BaseModel):
-    safe_ticket_1: Ticket  # Floor-Verified Slip (Target 2.00 - 2.40)
-    safe_ticket_2: Ticket  # Double-Chance Buffer Slip (Target 2.30 - 2.80)
+    safe_ticket_1: Ticket
+    safe_ticket_2: Ticket
 
-# ---------------------------------------------------------------------------
-# FETCH LIVE ODDS
-# ---------------------------------------------------------------------------
+# --- HISTORY SYSTEM ---
+HISTORY_FILE = "history.json"
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        with open(HISTORY_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_history(tickets):
+    history = load_history()
+    for t in tickets:
+        history.append({
+            "name": t.ticket_name,
+            "total_odds": t.total_odds,
+            "status": "PENDING",
+            "legs": [leg.dict() for leg in t.legs]
+        })
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+
+# --- FETCH ODDS & GENERATE SLIPS ---
 def fetch_fixtures() -> List[dict]:
     odds_api_key = os.getenv("ODDS_API_KEY", "")
     if not odds_api_key:
-        # Fallback fixtures for Sep 18, 2026 if API key is not set
         return [
-            {"match": "Bayern Munich vs Union Berlin", "league": "Bundesliga", "h2h": [1.20, 6.50, 12.00]},
-            {"match": "Brentford vs Chelsea", "league": "Premier League", "h2h": [3.40, 3.50, 2.10]},
-            {"match": "Bristol City vs Watford", "league": "Championship", "h2h": [2.40, 3.20, 2.90]},
-            {"match": "Espanyol vs Elche", "league": "La Liga", "h2h": [2.10, 3.25, 3.60]}
+            {"match": "Bayern Munich vs Union Berlin", "league": "Bundesliga", "h2h": [1.25, 6.0, 10.0]},
+            {"match": "Brentford vs Chelsea", "league": "Premier League", "h2h": [3.4, 3.5, 2.1]}
         ]
-    
     url = "https://api.the-odds-api.com/v4/sports/soccer_epl/odds/"
     params = {"apiKey": odds_api_key, "regions": "eu,uk", "markets": "h2h,totals", "oddsFormat": "decimal"}
     try:
@@ -58,29 +101,14 @@ def fetch_fixtures() -> List[dict]:
     except Exception:
         return []
 
-# ---------------------------------------------------------------------------
-# GEMINI AI SLIP GENERATION
-# ---------------------------------------------------------------------------
-def generate_safe_slips(fixtures_data: List[dict]) -> SafeBetSlipResponse:
+def generate_safe_slips(fixtures_data) -> SafeBetSlipResponse:
     gemini_key = os.getenv("GEMINI_API_KEY")
     if not gemini_key:
         st.error("Missing GEMINI_API_KEY in Secrets!")
         st.stop()
-        
+
     client = genai.Client(api_key=gemini_key)
-
-    prompt = f"""
-    Act as a strict quantitative sports handicapper focused ONLY on capital preservation and safe steady bankroll growth.
-    Analyze these fixtures: {json.dumps(fixtures_data)}
-
-    RULES:
-    1. Generate EXACTLY TWO SAFE tickets using the live bookie odds provided in fixtures_data.
-    2. Ticket 1 ('safe_ticket_1'): Safe Floor Slip (Target total odds: 2.00 - 2.50).
-    3. Ticket 2 ('safe_ticket_2'): Double-Chance Buffer Slip (Target total odds: 2.45 - 3.00).
-    4. Capping: Maximum 2 to 3 legs per ticket.
-    5. Math Accuracy: Combined total_odds MUST equal the exact mathematical product of individual leg odds.
-
-    """
+    prompt = f"Analyze these fixtures: {json.dumps(fixtures_data)}. Generate EXACTLY TWO SAFE slips (Target total odds strictly between 2.00 and 3.00)."
 
     response = client.models.generate_content(
         model="gemini-3.6-flash",
@@ -93,30 +121,38 @@ def generate_safe_slips(fixtures_data: List[dict]) -> SafeBetSlipResponse:
     )
     return SafeBetSlipResponse.model_validate_json(response.text)
 
-# ---------------------------------------------------------------------------
-# UI BUTTON & DISPLAY
-# ---------------------------------------------------------------------------
-stake = st.slider("Select Stake (£/$):", min_value=5, max_value=100, value=10, step=5)
+# --- TAB INTERFACE ---
+tab1, tab2 = st.tabs(["🎯 Active Slips Generator", "📜 Bet History & Tracker"])
 
-if st.button("🔄 Generate Today's Safe Slips", type="primary"):
-    with st.spinner("Analyzing match metrics & floor consistency..."):
-        fixtures = fetch_fixtures()
-        slips = generate_safe_slips(fixtures)
-        
-        # DISPLAY TICKET 1
-        t1 = slips.safe_ticket_1
-        st.subheader(f"🟢 Ticket 1: {t1.ticket_name}")
-        st.metric(label="Total Odds", value=f"{t1.total_odds:.2f}", delta=f"Est. Return: £{t1.total_odds * stake:.2f}")
-        for leg in t1.legs:
-            st.write(f"• **{leg.match}** ({leg.league}) — **{leg.market}: {leg.selection}** @ `{leg.odds:.2f}`")
-            st.caption(f"  *Floor Rationale:* {leg.rationale}")
-        
-        st.divider()
+with tab1:
+    if st.session_state.role == "admin":
+        if st.button("🔄 Generate Today's Safe Slips", type="primary"):
+            with st.spinner("Analyzing match metrics & floor consistency..."):
+                fixtures = fetch_fixtures()
+                slips = generate_safe_slips(fixtures)
+                save_history([slips.safe_ticket_1, slips.safe_ticket_2])
+                st.success("Slips generated and logged to history!")
+                
+                st.subheader(f"🟢 {slips.safe_ticket_1.ticket_name}")
+                st.metric("Total Odds", f"{slips.safe_ticket_1.total_odds:.2f}")
+                for leg in slips.safe_ticket_1.legs:
+                    st.write(f"• **{leg.match}** ({leg.market}): **{leg.selection}** @ {leg.odds}")
 
-        # DISPLAY TICKET 2
-        t2 = slips.safe_ticket_2
-        st.subheader(f"🛡️ Ticket 2: {t2.ticket_name}")
-        st.metric(label="Total Odds", value=f"{t2.total_odds:.2f}", delta=f"Est. Return: £{t2.total_odds * stake:.2f}")
-        for leg in t2.legs:
-            st.write(f"• **{leg.match}** ({leg.league}) — **{leg.market}: {leg.selection}** @ `{leg.odds:.2f}`")
-            st.caption(f"  *Floor Rationale:* {leg.rationale}")
+                st.subheader(f"🔵 {slips.safe_ticket_2.ticket_name}")
+                st.metric("Total Odds", f"{slips.safe_ticket_2.total_odds:.2f}")
+                for leg in slips.safe_ticket_2.legs:
+                    st.write(f"• **{leg.match}** ({leg.market}): **{leg.selection}** @ {leg.odds}")
+    else:
+        st.info("Guest users can view bet history in the next tab. Only Admin can generate new slips.")
+
+with tab2:
+    st.subheader("Historical Performance Tracker")
+    history_data = load_history()
+    if not history_data:
+        st.write("No historical slips recorded yet.")
+    else:
+        for idx, ticket in enumerate(reversed(history_data)):
+            status_color = "🔴" if ticket["status"] == "LOST" else ("🟢" if ticket["status"] == "WON" else "🟡")
+            with st.expander(f"{status_color} {ticket['name']} — Target Odds: {ticket['total_odds']} [{ticket['status']}]"):
+                for leg in ticket["legs"]:
+                    st.write(f"- {leg['match']}: **{leg['selection']}** ({leg['odds']})")
