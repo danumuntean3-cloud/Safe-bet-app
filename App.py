@@ -64,26 +64,49 @@ class SafeBetSlipResponse(BaseModel):
     safe_ticket_1: Ticket
     safe_ticket_2: Ticket
 
-# --- HISTORY SYSTEM ---
+# --- HISTORY & ACTIVE FILE MANAGEMENT ---
 HISTORY_FILE = "history.json"
+ACTIVE_FILE = "active_slips.json"
 
 def load_history():
     if os.path.exists(HISTORY_FILE):
-        with open(HISTORY_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
     return []
 
 def save_history(tickets):
     history = load_history()
     for t in tickets:
         history.append({
-            "name": t.ticket_name,
-            "total_odds": t.total_odds,
+            "name": t["ticket_name"],
+            "total_odds": t["total_odds"],
             "status": "PENDING",
-            "legs": [leg.dict() for leg in t.legs]
+            "legs": t["legs"]
         })
-    with open(HISTORY_FILE, "w") as f:
-        json.dump(history, f, indent=2)
+    try:
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+    except Exception:
+        pass
+
+def load_active_slips():
+    if os.path.exists(ACTIVE_FILE):
+        try:
+            with open(ACTIVE_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+def save_active_slips(slips_data: dict):
+    try:
+        with open(ACTIVE_FILE, "w") as f:
+            json.dump(slips_data, f, indent=2)
+    except Exception:
+        pass
 
 # --- FETCH ODDS & GENERATE SLIPS ---
 def fetch_fixtures() -> List[dict]:
@@ -125,25 +148,57 @@ def generate_safe_slips(fixtures_data) -> SafeBetSlipResponse:
 tab1, tab2 = st.tabs(["🎯 Active Slips Generator", "📜 Bet History & Tracker"])
 
 with tab1:
+    # 1. Admin button always stays at the top of Active Slips tab
     if st.session_state.role == "admin":
         if st.button("🔄 Generate Today's Safe Slips", type="primary"):
             with st.spinner("Analyzing match metrics & floor consistency..."):
                 fixtures = fetch_fixtures()
                 slips = generate_safe_slips(fixtures)
-                save_history([slips.safe_ticket_1, slips.safe_ticket_2])
-                st.success("Slips generated and logged to history!")
                 
-                st.subheader(f"🟢 {slips.safe_ticket_1.ticket_name}")
-                st.metric("Total Odds", f"{slips.safe_ticket_1.total_odds:.2f}")
-                for leg in slips.safe_ticket_1.legs:
-                    st.write(f"• **{leg.match}** ({leg.market}): **{leg.selection}** @ {leg.odds}")
+                # Format to convert Pydantic validation into dictionaries for files
+                slips_data = {
+                    "safe_ticket_1": {
+                        "ticket_name": slips.safe_ticket_1.ticket_name,
+                        "total_odds": slips.safe_ticket_1.total_odds,
+                        "legs": [leg.dict() for leg in slips.safe_ticket_1.legs]
+                    },
+                    "safe_ticket_2": {
+                        "ticket_name": slips.safe_ticket_2.ticket_name,
+                        "total_odds": slips.safe_ticket_2.total_odds,
+                        "legs": [leg.dict() for leg in slips.safe_ticket_2.legs]
+                    }
+                }
+                # Save as current active slips + append to bet history file
+                save_active_slips(slips_data)
+                save_history([slips_data["safe_ticket_1"], slips_data["safe_ticket_2"]])
+                st.success("Slips generated and logged to history!")
+                st.rerun()
 
-                st.subheader(f"🔵 {slips.safe_ticket_2.ticket_name}")
-                st.metric("Total Odds", f"{slips.safe_ticket_2.total_odds:.2f}")
-                for leg in slips.safe_ticket_2.legs:
-                    st.write(f"• **{leg.match}** ({leg.market}): **{leg.selection}** @ {leg.odds}")
+    # 2. Both Admin AND Guests see Today's Active Slips if they exist
+    active_data = load_active_slips()
+    
+    if active_data:
+        st.subheader("🎯 Today's Active Slips")
+        
+        # Display Slip 1
+        st.markdown(f"### 🟢 {active_data['safe_ticket_1']['ticket_name']}")
+        st.metric("Total Odds", f"{active_data['safe_ticket_1']['total_odds']:.2f}")
+        for leg in active_data['safe_ticket_1']['legs']:
+            st.write(f"• **{leg['match']}** ({leg['market']}): **{leg['selection']}** @ {leg['odds']}")
+            st.caption(f"_{leg['rationale']}_")
+
+        st.write("---")
+
+        # Display Slip 2
+        st.markdown(f"### 🔵 {active_data['safe_ticket_2']['ticket_name']}")
+        st.metric("Total Odds", f"{active_data['safe_ticket_2']['total_odds']:.2f}")
+        for leg in active_data['safe_ticket_2']['legs']:
+            st.write(f"• **{leg['match']}** ({leg['market']}): **{leg['selection']}** @ {leg['odds']}")
+            st.caption(f"_{leg['rationale']}_")
     else:
-        st.info("Guest users can view bet history in the next tab. Only Admin can generate new slips.")
+        st.warning("⚠️ No slips have been generated for today yet.")
+        if st.session_state.role != "admin":
+            st.info("Please wait for the Admin to generate today's safe slips.")
 
 with tab2:
     st.subheader("Historical Performance Tracker")
