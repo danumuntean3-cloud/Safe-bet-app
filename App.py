@@ -172,14 +172,18 @@ def generate_safe_slips(fixtures_data) -> SafeBetSlipResponse:
 tab1, tab2 = st.tabs(["🎯 Active Slips Generator", "📜 Bet History & Tracker"])
 
 with tab1:
-    # 1. Admin button always stays at the top of Active Slips tab
+    # 1. Admin controls with safety checkbox safeguard
     if st.session_state.role == "admin":
-        if st.button("🔄 Generate Today's Safe Slips", type="primary"):
+        st.subheader("⚙️ Admin Controls")
+        
+        # Checkbox safeguard to prevent accidental paid API triggers
+        confirm_generate = st.checkbox("Confirm: Fetch live odds & run paid Gemini AI generation")
+        
+        if st.button("🔄 Generate Today's Safe Slips", type="primary", disabled=not confirm_generate):
             with st.spinner("Analyzing match metrics & floor consistency..."):
                 fixtures = fetch_fixtures()
                 slips = generate_safe_slips(fixtures)
                 
-                # Format to convert Pydantic validation into dictionaries for files
                 slips_data = {
                     "safe_ticket_1": {
                         "ticket_name": slips.safe_ticket_1.ticket_name,
@@ -192,19 +196,18 @@ with tab1:
                         "legs": [leg.dict() for leg in slips.safe_ticket_2.legs]
                     }
                 }
-                # Save as current active slips + append to bet history file
+                
                 save_active_slips(slips_data)
                 save_history([slips_data["safe_ticket_1"], slips_data["safe_ticket_2"]])
-                st.success("Slips generated and logged to history!")
+                st.success("Slips updated successfully!")
                 st.rerun()
 
-    # 2. Both Admin AND Guests see Today's Active Slips if they exist
+    # 2. Display active slips from saved JSON file for both Admin and Guests
     active_data = load_active_slips()
     
     if active_data:
         st.subheader("🎯 Today's Active Slips")
         
-        # Display Slip 1
         st.markdown(f"### 🟢 {active_data['safe_ticket_1']['ticket_name']}")
         st.metric("Total Odds", f"{active_data['safe_ticket_1']['total_odds']:.2f}")
         for leg in active_data['safe_ticket_1']['legs']:
@@ -213,7 +216,6 @@ with tab1:
 
         st.write("---")
 
-        # Display Slip 2
         st.markdown(f"### 🔵 {active_data['safe_ticket_2']['ticket_name']}")
         st.metric("Total Odds", f"{active_data['safe_ticket_2']['total_odds']:.2f}")
         for leg in active_data['safe_ticket_2']['legs']:
@@ -223,6 +225,7 @@ with tab1:
         st.warning("⚠️ No slips have been generated for today yet.")
         if st.session_state.role != "admin":
             st.info("Please wait for the Admin to generate today's safe slips.")
+
 
 with tab2:
     st.subheader("Historical Performance Tracker")
