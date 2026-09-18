@@ -228,13 +228,58 @@ with tab1:
 
 
 with tab2:
-    st.subheader("Historical Performance Tracker")
+    st.subheader("📜 Historical Performance Tracker")
     history_data = load_history()
+    
     if not history_data:
-        st.write("No historical slips recorded yet.")
+        st.info("No historical slips recorded yet.")
     else:
+        # --- PERFORMANCE STATISTICS COUNTER ---
+        total_slips = len(history_data)
+        won_slips = sum(1 for t in history_data if t.get("status") == "WON")
+        lost_slips = sum(1 for t in history_data if t.get("status") == "LOST")
+        pending_slips = sum(1 for t in history_data if t.get("status") == "PENDING")
+        
+        # Win Rate calculation (excluding pending)
+        settled_slips = won_slips + lost_slips
+        win_rate = (won_slips / settled_slips * 100) if settled_slips > 0 else 0.0
+
+        # Display Summary Dashboard Metrics in columns
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Slips", total_slips)
+        col2.metric("Won 🟢", won_slips)
+        col3.metric("Lost 🔴", lost_slips)
+        col4.metric("Win Rate", f"{win_rate:.1f}%")
+
+        if pending_slips > 0:
+            st.caption(f"⏳ **{pending_slips}** slip(s) currently pending settlement.")
+
+        st.write("---")
+
+        # --- SLIP LIST DISPLAY ---
         for idx, ticket in enumerate(reversed(history_data)):
-            status_color = "🔴" if ticket["status"] == "LOST" else ("🟢" if ticket["status"] == "WON" else "🟡")
-            with st.expander(f"{status_color} {ticket['name']} — Target Odds: {ticket['total_odds']} [{ticket['status']}]"):
+            status = ticket.get("status", "PENDING")
+            status_icon = "🟢" if status == "WON" else ("🔴" if status == "LOST" else "🟡")
+            
+            with st.expander(f"{status_icon} {ticket['name']} — Target Odds: {ticket['total_odds']:.2f} [{status}]"):
+                # Admin controls to mark status directly in history
+                if st.session_state.role == "admin":
+                    c1, c2, c3 = st.columns(3)
+                    if c1.button("Mark Won 🟢", key=f"won_{idx}"):
+                        history_data[len(history_data) - 1 - idx]["status"] = "WON"
+                        save_history(history_data) # persists update
+                        st.rerun()
+                    if c2.button("Mark Lost 🔴", key=f"lost_{idx}"):
+                        history_data[len(history_data) - 1 - idx]["status"] = "LOST"
+                        save_history(history_data)
+                        st.rerun()
+                    if c3.button("Reset Pending 🟡", key=f"pend_{idx}"):
+                        history_data[len(history_data) - 1 - idx]["status"] = "PENDING"
+                        save_history(history_data)
+                        st.rerun()
+
+                st.write("**Legs:**")
                 for leg in ticket["legs"]:
-                    st.write(f"- {leg['match']}: **{leg['selection']}** ({leg['odds']})")
+                    st.write(f"• {leg['match']}: **{leg['selection']}** ({leg['odds']})")
+
+
