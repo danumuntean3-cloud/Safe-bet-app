@@ -16,26 +16,21 @@ st.set_page_config(page_title="Safe Accumulator AI", page_icon="⚽", layout="ce
 cookie_manager = stx.CookieManager(key="cookie_manager")
 
 def check_auth():
-    # 1. Check if session_state is already authenticated in active runtime memory
     if st.session_state.get("authenticated", False):
         return
 
-    # 2. Fetch browser cookies
     cookies = cookie_manager.get_all()
     
-    # 3. Hydration Guard: Wait for frontend cookie component to load on page refresh
-    if cookies is None or not isinstance(cookies, dict):
+    if cookies is None:
         st.stop()
 
     saved_role = cookies.get("auth_role")
 
-    # 4. Auto-login if a valid persistent cookie exists
     if saved_role in ["admin", "user"]:
         st.session_state.authenticated = True
         st.session_state.role = saved_role
         st.rerun()
 
-    # 5. Fallback to Login UI if no cookie is present
     st.session_state.authenticated = False
     st.session_state.role = None
 
@@ -301,4 +296,3 @@ with tab2:
                 st.write("**Legs:**")
                 for leg in ticket["legs"]:
                     st.write(f"• {leg['match']}: **{leg['selection']}** ({leg['odds']})")
-
