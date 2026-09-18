@@ -2,3 +2,4 @@ streamlit
 google-genai
 requests
 pydantic
+extra-streamlit-components
